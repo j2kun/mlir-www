@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Operation Search</title>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 800px; margin: auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; margin-bottom: 30px; }
+        .search-controls { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 25px; align-items: center; }
+        .search-controls label { font-weight: bold; color: #555; }
+        .search-controls input[type="text"],
+        .search-controls select {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            min-width: 150px;
+            box-sizing: border-box; /* Ensure padding doesn't add to element's total width */
+        }
+        .search-controls button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        .search-controls button:hover { background-color: #0056b3; }
+        #results { margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; }
+        #results h2 { color: #333; margin-bottom: 20px; }
+        #results ul { list-style-type: none; padding: 0; }
+        #results li {
+            background-color: #e9f5ff;
+            margin-bottom: 10px;
+            padding: 15px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        #results li a {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        #results li a:hover { text-decoration: underline; }
+        .no-results { color: #dc3545; font-weight: bold; text-align: center; padding: 20px; background-color: #fff3f3; border-radius: 5px; }
+        .spelling-warning { color: #ffc107; font-weight: bold; text-align: center; padding: 15px; background-color: #fff8e1; border-radius: 5px; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Operation Search</h1>
+
+        <div class="search-controls">
+            <label for="opInput">Operation Name:</label>
+            <input type="text" id="opInput" placeholder="e.g., arith.addi or func.return">
+
+            <label for="dialectFilter">Dialect:</label>
+            <select id="dialectFilter">
+                <option value="">All Dialects</option>
+                </select>
+
+            <label for="mutationFilter">Mutation Type:</label>
+            <select id="mutationFilter">
+                <option value="">All Mutation Types</option>
+                <option value="notifyOperationErased">Erased</option>
+                <option value="notifyOperationInserted">Inserted</option>
+                <option value="notifyOperationModified">Modified</option>
+                <option value="notifyOperationReplaced (with values)">Replaced (values)</option>
+                <option value="notifyOperationReplaced (with op)">Replaced (op)</option>
+            </select>
+
+            <button onclick="performSearch()">Search</button>
+        </div>
+
+        <div id="results">
+            <h2>Search Results</h2>
+            <ul id="resultsList">
+                </ul>
+        </div>
+    </div>
+
+    <script>
+        let searchIndex = {};
+        let rawData = []; // To store original lines for mutation type and dialect filtering
+
+        // Load the search index and raw data
+        async function loadData() {
+            try {
+                // Fetch search_index.json
+                const searchIndexResponse = await fetch('search_data/search_index.json');
+                searchIndex = await searchIndexResponse.json();
+
+                // Fetch raw operations.txt to extract dialects and mutation types
+                const rawDataResponse = await fetch('operations.txt');
+                const rawText = await rawDataResponse.text();
+                rawData = rawText.split('\n').filter(line => line.trim() !== '');
+
+                populateFilters();
+            } catch (error) {
+                console.error("Error loading data:", error);
+                document.getElementById('resultsList').innerHTML = '<li class="no-results">Error loading search data. Please check console.</li>';
+            }
+        }
+
+        function populateFilters() {
+            const dialectSet = new Set();
+            const mutationTypeSet = new Set(); // Already hardcoded, but good for completeness
+
+            rawData.forEach(line => {
+                const parts = line.split('|').map(p => p.trim());
+                if (parts.length > 2) {
+                    const op_part = parts[2];
+                    if (op_part.includes('.')) {
+                        dialectSet.add(op_part.split('.')[0]);
+                    }
+                }
+                if (parts.length > 1) {
+                    mutationTypeSet.add(parts[1]);
+                }
+            });
+
+            const dialectFilter = document.getElementById('dialectFilter');
+            Array.from(dialectSet).sort().forEach(dialect => {
+                const option = document.createElement('option');
+                option.value = dialect;
+                option.textContent = dialect;
+                dialectFilter.appendChild(option);
+            });
+            // Mutation types are hardcoded as they are fixed and fewer.
+        }
+
+        function performSearch() {
+            const opInput = document.getElementById('opInput').value.trim().toLowerCase();
+            const dialectFilter = document.getElementById('dialectFilter').value;
+            const mutationFilter = document.getElementById('mutationFilter').value;
+            const resultsList = document.getElementById('resultsList');
+            resultsList.innerHTML = ''; // Clear previous results
+
+            if (!opInput && !dialectFilter && !mutationFilter) {
+                resultsList.innerHTML = '<li class="no-results">Please enter an operation name or select a filter.</li>';
+                return;
+            }
+
+            let foundClassNames = new Set();
+            let potentialMisspellings = false;
+
+            // Step 1: Filter by opInput (if provided)
+            let opFilteredClassNames = new Set();
+            if (opInput) {
+                if (searchIndex[opInput]) {
+                    searchIndex[opInput].forEach(className => opFilteredClassNames.add(className));
+                } else {
+                    // Check for potential misspellings (simple substring match for demonstration)
+                    for (const key in searchIndex) {
+                        if (key.includes(opInput) || opInput.includes(key)) {
+                            potentialMisspellings = true;
+                            break;
+                        }
+                    }
+                    if (!potentialMisspellings) {
+                        // If no direct match and no potential misspelling by substring, it's truly not found
+                        resultsList.innerHTML = `<li class="no-results">"${opInput}" not found.</li>`;
+                        return;
+                    }
+                }
+            } else {
+                // If no opInput, start with all class names from the data
+                rawData.forEach(line => {
+                    opFilteredClassNames.add(line.split('|')[0].trim());
+                });
+            }
+
+            // Step 2: Apply dialect and mutation filters on top of op-filtered results
+            let finalClassNames = new Set();
+            if (opInput && opFilteredClassNames.size === 0 && !potentialMisspellings) {
+                // No need to proceed if the opInput yielded no results and wasn't a potential misspelling
+                 resultsList.innerHTML = `<li class="no-results">"${opInput}" not found.</li>`;
+                 return;
+            }
+
+            rawData.forEach(line => {
+                const parts = line.split('|').map(p => p.trim());
+                const className = parts[0];
+                const mutationType = parts[1];
+                const opNamesInLine = [];
+                if (mutationType.includes("notifyOperationReplaced (with op)") && parts.length > 3) {
+                    opNamesInLine.push(parts[2], parts[3]);
+                } else if (parts.length > 2) {
+                    opNamesInLine.push(parts[2]);
+                }
+
+                // Check opInput match (if opInput is provided)
+                const opMatch = opInput ? opNamesInLine.some(op => op.toLowerCase() === opInput) : true;
+
+                // Check dialect filter
+                const dialectMatch = dialectFilter ? opNamesInLine.some(op => op.includes('.') && op.split('.')[0] === dialectFilter) : true;
+
+                // Check mutation type filter
+                const mutationMatch = mutationFilter ? mutationType === mutationFilter : true;
+
+                if (opMatch && dialectMatch && mutationMatch) {
+                    // Only add if it was already in the op-filtered set (or if no opInput was provided)
+                    if (opInput && opFilteredClassNames.has(className)) {
+                        finalClassNames.add(className);
+                    } else if (!opInput) {
+                        finalClassNames.add(className);
+                    }
+                }
+            });
+
+
+            if (finalClassNames.size === 0) {
+                resultsList.innerHTML = `<li class="no-results">No results found matching your criteria.</li>`;
+                if (potentialMisspellings && opInput) {
+                    resultsList.innerHTML += `<li class="spelling-warning">💡 Did you mean something else? "${opInput}" was not an exact match.</li>`;
+                }
+                return;
+            }
+
+            // Display results
+            Array.from(finalClassNames).sort().forEach(className => {
+                const li = document.createElement('li');
+                li.innerHTML = `<a href="class_pages/${className}.html">${className}</a>`;
+                resultsList.appendChild(li);
+            });
+
+            if (potentialMisspellings && opInput) {
+                resultsList.innerHTML += `<li class="spelling-warning">💡 Did you mean something else? "${opInput}" was not an exact match for any *direct* operation name. Results might be based on partial matches or filters.</li>`;
+            }
+        }
+
+        // Initialize search when the page loads
+        document.addEventListener('DOMContentLoaded', loadData);
+    </script>
+</body>
+</html>
